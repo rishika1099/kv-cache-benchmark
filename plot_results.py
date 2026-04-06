@@ -115,6 +115,7 @@ def save_fig(fig, plots_dir: Path, name: str):
 # ── PLOT 1: Memory vs Quality ──────────────────────────────────────────────────
 
 def plot_memory_vs_quality(df, plots_dir):
+    df = df[~df['method'].str.contains('FALLBACK', na=False)]
     ppl_df = df[df['prompt_type'] == 'wikitext'].dropna(subset=['perplexity', 'compression_ratio'])
     if ppl_df.empty:
         print("  [SKIP] memory_vs_quality: no wikitext/perplexity data")
@@ -174,6 +175,7 @@ def plot_memory_vs_quality(df, plots_dir):
 # ── PLOT 2: Throughput vs Compression ─────────────────────────────────────────
 
 def plot_throughput_vs_compression(df, plots_dir):
+    df = df[~df['method'].str.contains('FALLBACK', na=False)]
     syn_df = df[df['prompt_type'] == 'synthetic'].dropna(
         subset=['throughput_tps', 'compression_ratio']
     )
@@ -213,6 +215,7 @@ def plot_throughput_vs_compression(df, plots_dir):
 # ── PLOT 3: Memory Scaling ─────────────────────────────────────────────────────
 
 def plot_memory_scaling(df, plots_dir):
+    df = df[~df['method'].str.contains('FALLBACK', na=False)]
     syn_df = df[df['prompt_type'] == 'synthetic'].dropna(subset=['peak_memory_gb', 'seq_len'])
     if syn_df.empty:
         print("  [SKIP] memory_scaling: no synthetic data")
@@ -252,6 +255,7 @@ def plot_memory_scaling(df, plots_dir):
 # ── PLOT 4: Latency Breakdown ──────────────────────────────────────────────────
 
 def plot_latency_breakdown(df, plots_dir):
+    df = df[~df['method'].str.contains('FALLBACK', na=False)]
     syn_df = df[df['prompt_type'] == 'synthetic'].dropna(
         subset=['ttft_ms', 'per_token_latency_ms']
     )
@@ -301,6 +305,7 @@ def plot_latency_breakdown(df, plots_dir):
 # ── PLOT 5: LongBench Radar ────────────────────────────────────────────────────
 
 def plot_longbench_radar(df, plots_dir):
+    df = df[~df['method'].str.contains('FALLBACK', na=False)]
     lb_df = df[df['prompt_type'] == 'longbench'].dropna(subset=['longbench_score'])
     if lb_df.empty:
         print("  [SKIP] longbench_radar: no LongBench data")

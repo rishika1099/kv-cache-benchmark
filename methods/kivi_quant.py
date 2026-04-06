@@ -65,7 +65,7 @@ class KIVIMethod(MethodWrapper):
         result = []
 
         for layer_idx, layer_kv in enumerate(past_key_values):
-            k, v = layer_kv[0].float(), layer_kv[1].float()
+            k, v = layer_kv[0].half(), layer_kv[1].half()
             # k/v shape: (batch, heads, seq_len, head_dim)
 
             seq_len = k.shape[2]
@@ -132,8 +132,8 @@ class KIVIMethod(MethodWrapper):
 
             # If residual exceeds residual_length, move oldest token to quantized cache
             if res_k.shape[2] > self.residual_length:
-                overflow_k = res_k[:, :, :1, :].float()
-                overflow_v = res_v[:, :, :1, :].float()
+                overflow_k = res_k[:, :, :1, :].half()
+                overflow_v = res_v[:, :, :1, :].half()
                 res_k = res_k[:, :, 1:, :]
                 res_v = res_v[:, :, 1:, :]
 
@@ -145,10 +145,10 @@ class KIVIMethod(MethodWrapper):
                     # Dequantize existing, append overflow, re-quantize
                     existing_k = dequantize(
                         state['quantized_k'], state['scale_k'], state['zero_k']
-                    ).float()
+                    ).half()
                     existing_v = dequantize(
                         state['quantized_v'], state['scale_v'], state['zero_v']
-                    ).float()
+                    ).half()
                     combined_k = torch.cat([existing_k, overflow_k], dim=2)
                     combined_v = torch.cat([existing_v, overflow_v], dim=2)
                     q_k, s_k, z_k = quantize_per_channel(combined_k, self.bits)
@@ -190,7 +190,7 @@ class KIVIMethod(MethodWrapper):
             if state['quantized_k'] is not None:
                 for key in ('quantized_k', 'quantized_v'):
                     t = state[key]
-                    total += t.numel() * t.element_size()
+                    total += int(t.numel() * self.bits / 8)
                 for key in ('scale_k', 'zero_k', 'scale_v', 'zero_v'):
                     t = state[key]
                     total += t.numel() * t.element_size()

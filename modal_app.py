@@ -376,7 +376,6 @@ def run_method(
     import traceback
     from benchmark.metrics  import MetricsLogger
     from benchmark.runner   import generate_with_method
-    from methods.baseline   import BaselineMethod
 
     model, tokenizer = _load_model(config["model"]["name"])
     method  = _build_method(method_name, method_cfg)
@@ -416,22 +415,12 @@ def run_method(
                 f"tps={metrics['throughput_tps']:.1f}"
             )
         except Exception as e:
+            import warnings
             print(f"  [ERROR] {method_name} {p['prompt_id']}: {e}\n{traceback.format_exc()}")
-            # Fallback to baseline so the slot isn't empty in results
-            try:
-                fallback = BaselineMethod()
-                _, fm = generate_with_method(
-                    model, tokenizer, fallback,
-                    prompt=p["prompt"], max_new_tokens=max_new_tokens, device="cuda",
-                )
-                rec = logger.log(
-                    method=f"{method_name}_FALLBACK", config=method_cfg,
-                    prompt_type=p["prompt_type"], run_metrics=fm,
-                    task=p.get("task", "n/a"),
-                )
-                results.append(rec)
-            except Exception as e2:
-                print(f"  [ERROR] Fallback also failed: {e2}")
+            warnings.warn(
+                f"Skipping prompt {p['prompt_id']} for {method_name}: method crashed. "
+                f"No fallback result recorded."
+            )
 
     results_vol.commit()
     print(f"[modal] Done: {method_name} {cfg_str}")
@@ -461,47 +450,25 @@ def run_perplexity(
     """
     Compute per-method perplexity on WikiText-103.
 
-    For baseline: vanilla forward pass (standard PPL).
-    For other methods: prefill half the text → apply method → forward on
-    second half with modified KV → measure cross-entropy.
-
-    This captures quality degradation from KV cache modification.
+    All methods (including baseline) use the same split-text protocol:
+    prefill first half → apply method → evaluate second half through
+    modified KV cache. This ensures PPL values are directly comparable.
     """
     _bootstrap()
     _set_seeds(seed)
-
-    import math
-    import torch
 
     model, tokenizer = _load_model(config["model"]["name"])
 
     method = _build_method(method_name, method_cfg)
     cfg_str = json.dumps(method_cfg, sort_keys=True)
 
-    if method_name == "baseline":
-        # Standard PPL: plain forward pass
-        total_nll, total_tokens = 0.0, 0
-        with torch.no_grad():
-            for text in wikitext_texts:
-                enc = tokenizer(
-                    text, return_tensors="pt",
-                    truncation=True, max_length=512,
-                ).to("cuda")
-                ids = enc["input_ids"]
-                if ids.shape[1] < 2:
-                    continue
-                out = model(ids, labels=ids)
-                n   = ids.shape[1] - 1
-                total_nll    += out.loss.item() * n
-                total_tokens += n
-        ppl = math.exp(total_nll / total_tokens) if total_tokens else float("inf")
-    else:
-        # Per-method PPL: measure quality degradation through modified KV
-        from benchmark.runner import compute_method_perplexity
-        ppl = compute_method_perplexity(
-            model, tokenizer, method, wikitext_texts,
-            device="cuda", max_length=512,
-        )
+    # All methods (including baseline) use the same split-text protocol
+    # so that perplexity values are directly comparable.
+    from benchmark.runner import compute_method_perplexity
+    ppl = compute_method_perplexity(
+        model, tokenizer, method, wikitext_texts,
+        device="cuda", max_length=512,
+    )
 
     print(f"[modal] PPL {method_name} {cfg_str}: {ppl:.3f}")
     return {"method": method_name, "config": method_cfg, "perplexity": ppl}

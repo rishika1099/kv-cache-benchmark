@@ -35,35 +35,52 @@ class XKVMethod(MethodWrapper):
 
     def _svd_compress(self, tensor, rank):
         """
-        Compress tensor via truncated SVD.
+        Compress tensor via truncated SVD, performed **per head**.
         tensor shape: (batch, heads, seq_len, head_dim)
-        Returns: U, S, Vh (truncated to `rank`)
+        Returns: U_list, S_list, Vh_list (one per head, truncated to `rank`),
+                 and original_shape tuple.
+
+        Per-head SVD operates on (seq_len, head_dim) so that
+        effective_rank = min(rank, seq_len, head_dim), giving real
+        compression whenever rank < min(seq_len, head_dim).
         """
         batch, heads, seq_len, head_dim = tensor.shape
-        # Reshape to (heads * seq_len, head_dim) for SVD
-        t2d = tensor.squeeze(0).reshape(heads * seq_len, head_dim).float()
+        t = tensor.squeeze(0).float()  # (heads, seq_len, head_dim)
 
-        # Clamp rank to valid range
-        effective_rank = min(rank, min(t2d.shape))
+        U_list, S_list, Vh_list = [], [], []
 
-        try:
-            U, S, Vh = torch.linalg.svd(t2d, full_matrices=False)
-            U = U[:, :effective_rank]
-            S = S[:effective_rank]
-            Vh = Vh[:effective_rank, :]
-        except Exception:
-            # SVD can fail on degenerate matrices; return full-rank as fallback
-            effective_rank = min(t2d.shape)
-            U, S, Vh = torch.linalg.svd(t2d, full_matrices=False)
+        for h in range(heads):
+            mat = t[h]  # (seq_len, head_dim)
+            effective_rank = min(rank, seq_len, head_dim)
 
-        return U.to(torch.float16), S.to(torch.float16), Vh.to(torch.float16), \
-               (batch, heads, seq_len, head_dim)
+            try:
+                U, S, Vh = torch.linalg.svd(mat, full_matrices=False)
+                U = U[:, :effective_rank]    # (seq_len, effective_rank)
+                S = S[:effective_rank]       # (effective_rank,)
+                Vh = Vh[:effective_rank, :]  # (effective_rank, head_dim)
+            except Exception:
+                # SVD can fail on degenerate matrices; keep full rank as fallback
+                U, S, Vh = torch.linalg.svd(mat, full_matrices=False)
 
-    def _svd_reconstruct(self, U, S, Vh, original_shape):
-        """Reconstruct approximated tensor from SVD components."""
+            U_list.append(U.to(torch.float16))
+            S_list.append(S.to(torch.float16))
+            Vh_list.append(Vh.to(torch.float16))
+
+        return U_list, S_list, Vh_list, (batch, heads, seq_len, head_dim)
+
+    def _svd_reconstruct(self, U_list, S_list, Vh_list, original_shape):
+        """Reconstruct approximated tensor from per-head SVD components."""
         batch, heads, seq_len, head_dim = original_shape
-        reconstructed = (U.float() * S.float().unsqueeze(0)) @ Vh.float()
-        return reconstructed.to(torch.float16).reshape(batch, heads, seq_len, head_dim)
+        device = U_list[0].device
+
+        pieces = []
+        for h in range(heads):
+            # U: (seq_len, r), S: (r,), Vh: (r, head_dim)
+            recon = (U_list[h].float() * S_list[h].float().unsqueeze(0)) @ Vh_list[h].float()
+            pieces.append(recon.to(torch.float16))
+
+        # Stack heads -> (heads, seq_len, head_dim), then unsqueeze batch
+        return torch.stack(pieces, dim=0).unsqueeze(0)  # (1, heads, seq_len, head_dim)
 
     def process_prefill(self, past_key_values, attention_weights=None):
         self.cache = {}
@@ -195,14 +212,16 @@ class XKVMethod(MethodWrapper):
         self.cache = {}
 
     def get_kv_size_bytes(self, past_key_values):
-        """Count: U + S + Vh tensor bytes + residual bytes."""
+        """Count: per-head U + S + Vh tensor bytes + residual bytes."""
         total = 0
         for layer_idx, state in self.cache.items():
             if state['use_svd']:
-                for key in ('U_k', 'S_k', 'Vh_k', 'U_v', 'S_v', 'Vh_v'):
-                    if state[key] is not None:
-                        t = state[key]
-                        total += t.numel() * t.element_size()
+                # SVD components are lists of tensors (one per head)
+                for list_key in ('U_k', 'S_k', 'Vh_k', 'U_v', 'S_v', 'Vh_v'):
+                    tensor_list = state[list_key]
+                    if tensor_list is not None:
+                        for t in tensor_list:
+                            total += t.numel() * t.element_size()
                 for key in ('residual_k', 'residual_v'):
                     t = state[key]
                     total += t.numel() * t.element_size()
